@@ -1,12 +1,14 @@
 {
   "domain": "mango_power",
   "name": "Mango Power (unofficial)",
-  "codeowners": [],
+  "codeowners": [
+    "@aogden24-byte"
+  ],
   "config_flow": true,
-  "documentation": "https://github.com/YOUR_GITHUB_USER/ha-mango-power",
+  "documentation": "https://github.com/aogden24-byte/mango_power",
   "integration_type": "hub",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/YOUR_GITHUB_USER/ha-mango-power/issues",
+  "issue_tracker": "https://github.com/aogden24-byte/mango_power/issues",
   "requirements": [],
   "version": "0.1.1"
 }

@@ -19,6 +19,7 @@ Each unit on your account appears as its own **device** with:
 | Switches | AC output, DC output, smart charge, UPS mode |
 | Selects | Max AC input current (10/15/30 A), backup SOC (85/90/95 %) |
 | Diagnostic | Online, last active, firmware, rated capacity |
+| Diagnostic (settings the app doesn't show, read-only) | AC output voltage setting, AC frequency setting, eco reserve SOC, running, 240V mode, timer mode |
 
 Data refreshes every 60 seconds. Commands take effect within ~20 seconds.
 

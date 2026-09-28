@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Questions, ideas and "does it work with my unit?"
+    url: https://github.com/aogden24-byte/mango_power/discussions
+    about: Ask and share in Discussions

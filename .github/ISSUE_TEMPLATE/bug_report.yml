@@ -1,0 +1,43 @@
+name: 🐞 Bug report
+description: Something isn't working
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please check the **Troubleshooting** section of the README first.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Mango model
+      placeholder: Mango Power E
+    validations:
+      required: true
+  - type: dropdown
+    id: region
+    attributes:
+      label: Region
+      options: [US, EU, JP, AU, CN, Other]
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Integration version (HACS) and Home Assistant version
+      placeholder: "mango_power 0.1.1, Home Assistant 2026.9.4"
+  - type: textarea
+    id: log
+    attributes:
+      label: Debug log
+      description: |
+        Settings → Devices & services → Mango Power → ⋮ → Enable debug logging, reproduce the problem,
+        then ⋮ → Disable debug logging and paste or attach the downloaded log.
+      render: text

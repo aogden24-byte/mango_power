@@ -19,9 +19,10 @@ class MangoEntity(CoordinatorEntity[MangoDeviceCoordinator]):
             identifiers={(DOMAIN, coordinator.sn)},
             name=coordinator.device_name,
             manufacturer="Mango Power",
-            model="Mango Power E",
+            model=coordinator.model_name,
             serial_number=coordinator.sn,
             sw_version=coordinator.firmware,
+            suggested_area=coordinator.group_name,
         )
 
     @property

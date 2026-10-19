@@ -9,6 +9,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import MangoConfigEntry
+from .const import MODEL_E
 from .entity import MangoEntity
 
 # (state key from settings, app settingType, name, icon)
@@ -23,8 +24,12 @@ SWITCHES = (
 async def async_setup_entry(
     hass: HomeAssistant, entry: MangoConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
+    # Only the E has controls; the S exposes no settings through the cloud.
     async_add_entities(
-        MangoSwitch(c, *spec) for c in entry.runtime_data.coordinators for spec in SWITCHES
+        MangoSwitch(c, *spec)
+        for c in entry.runtime_data.coordinators
+        if c.model == MODEL_E
+        for spec in SWITCHES
     )
 
 

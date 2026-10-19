@@ -1,8 +1,9 @@
-# Mango Power E for Home Assistant (unofficial)
+# Mango Power for Home Assistant (unofficial)
 
-See and control your **Mango Power E** power stations from Home Assistant: battery level,
-solar, charging, outputs, energy totals and more. Each unit shows up as its own device,
-just like ESPHome or any other integration.
+See and control your **Mango Power E** power stations, and monitor your **Mango Power S / S Pro**
+solar microinverters, from Home Assistant: battery level, solar, charging, outputs, energy
+totals and more. Each unit shows up as its own device, just like ESPHome or any other
+integration.
 
 It talks to the same cloud service the official Mango Power app uses, so if your units
 work in the app, they will work here.
@@ -25,6 +26,52 @@ For every Mango Power E on your account:
 | 🩺 **Diagnostics** | Online, last seen, firmware, inverter temperature, AC voltage/frequency settings, and more |
 
 Values refresh every 60 seconds. Commands usually take effect within 20 seconds.
+
+### Mango Power S / S Pro microinverters
+
+Every microinverter on your account becomes its own device (named e.g. "Mango Power S 1 (left)"
+from the name you gave it in the app). The S is monitor-only: the cloud exposes no settings
+for it, so there are no switches or selectors.
+
+| | |
+|---|---|
+| ☀️ **Solar (DC) side** | PV input power, voltage and current |
+| 🔌 **AC side** | AC output power, voltage, current and frequency |
+| 📊 **Energy** | *Energy produced* (lifetime, as reported by the unit) and *Energy produced today*. The cloud's own "today" value stays at 0, so the integration works it out as the lifetime counter minus its value at local midnight (it survives restarts; if Home Assistant was off over midnight, that morning's energy before the first reading is not counted). |
+| 🧮 **Array totals** | With two or more inverters, a **Mango Power S array** device adds *Total AC output power*, *Total PV input power*, *Total energy produced today* and *Total energy produced*. Use *Total energy produced* as your one solar source in the Energy dashboard. |
+| 🌡️ **Diagnostics** | Temperature, online, standby, anti-backflow, last seen, firmware; Wi-Fi signal and mesh level (disabled by default) |
+
+### Gateway Lite (grid meter)
+
+If you have a **Gateway Lite**, it appears as its own device with your grid readings:
+
+| | |
+|---|---|
+| 🔌 **Grid** | *Grid power* (as reported, signed), *Grid import power*, *Grid export power*, voltage and current; reactive/apparent power and power factor are disabled by default |
+| 📊 **Energy** | *Grid import energy* and *Grid export energy* (kWh totals built from the readings, for the Energy dashboard) |
+| 🩺 **Diagnostics** | Online, last seen, firmware, meter Wi-Fi signal (disabled by default) |
+
+The cloud sends the Gateway Lite's meter readings through the **root inverter** of your Wi-Fi
+mesh group, not through the gateway itself, so the integration pairs the two automatically.
+It assumes a **positive reading means you are importing from the grid** (confirmed for the site totals above). If *Grid import power*
+reads 0 while you are clearly drawing from the grid, the sign is the other way round, so please
+open an issue.
+
+### Site totals (both grid phases)
+
+The Gateway Lite device only carries phase L1. For the whole house, the integration also reads
+the site totals the app shows, as a **Mango Power site** device:
+
+| | |
+|---|---|
+| 🔌 **Grid** | *Grid power* (L1 + L2 together; positive = importing), *Grid import power*, *Grid export power* |
+| ☀️ **Solar / home** | *Solar power*, *Home power* (= grid + solar), *Solar energy today* (calculated by the Mango cloud) |
+| 📊 **Energy** | *Grid import energy*, *Grid export energy*, *Home energy* (kWh totals built from the readings, for the Energy dashboard), plus a *… today* version of each that resets at midnight |
+| 💲 **Estimated value** | *Grid export value today* and *Grid import cost today* = energy today × the price you enter under **Configure** (per kWh, in your Home Assistant currency). Left out while the price is 0. A flat-rate estimate, not your bill. |
+
+For the Energy dashboard use these site sensors for grid and the *Mango Power S array* total for
+solar, not the single-phase Gateway Lite ones. If the cloud does not answer the site endpoints the
+device is simply not created.
 
 ---
 
@@ -168,7 +215,9 @@ When reporting a bug, a debug log helps a lot:
 | | Status |
 |---|---|
 | Mango Power E | ✅ Supported |
-| Other Mango models (M, micro-inverters, gateways) | ❌ Not yet — skipped during setup |
+| Mango Power S / S Pro (microinverter) | ✅ Supported (monitoring only) |
+| Gateway Lite (grid meter for the S) | ✅ Supported (monitoring only) |
+| Other Mango models (M, other gateways, etc.) | ❌ Not yet — skipped during setup |
 | US region | ✅ Tested |
 | EU / JP / AU / CN | ⚠️ Should work, untested — please report back! |
 

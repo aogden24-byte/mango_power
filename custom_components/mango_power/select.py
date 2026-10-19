@@ -8,7 +8,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import MangoConfigEntry
-from .const import BACKUP_SOC_OPTIONS, MAX_AC_INPUT_OPTIONS
+from .const import BACKUP_SOC_OPTIONS, MAX_AC_INPUT_OPTIONS, MODEL_E
 from .entity import MangoEntity
 
 
@@ -17,6 +17,8 @@ async def async_setup_entry(
 ) -> None:
     ents = []
     for c in entry.runtime_data.coordinators:
+        if c.model != MODEL_E:
+            continue
         ents.append(MangoSelect(c, "maxChargeCurrent", "maxACInput", "Max AC input current",
                                 MAX_AC_INPUT_OPTIONS, "mdi:current-ac", str))
         ents.append(MangoSelect(c, "upsAutoChargeSoc", "backupSoc", "Backup SOC",

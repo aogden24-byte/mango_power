@@ -7,6 +7,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import MangoConfigEntry
+from .const import MODEL_GW, MODEL_S
 from .entity import MangoEntity
 
 # (data key, name, device class, icon)
@@ -18,12 +19,27 @@ BINARY = (
     ("timerMode", "Timer mode", None, "mdi:timer-cog-outline"),
 )
 
+# Mango Power S microinverter
+BINARY_S = (
+    ("online", "Online", BinarySensorDeviceClass.CONNECTIVITY, None),
+    ("isStandby", "Standby", None, "mdi:sleep"),
+    ("antiBackflow", "Anti-backflow", None, "mdi:transmission-tower-off"),
+)
+
+
+# Gateway Lite
+BINARY_GW = (("online", "Online", BinarySensorDeviceClass.CONNECTIVITY, None),)
+
+BINARY_BY_MODEL = {MODEL_S: BINARY_S, MODEL_GW: BINARY_GW}
+
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: MangoConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     async_add_entities(
-        MangoBinary(c, *spec) for c in entry.runtime_data.coordinators for spec in BINARY
+        MangoBinary(c, *spec)
+        for c in entry.runtime_data.coordinators
+        for spec in BINARY_BY_MODEL.get(c.model, BINARY)
     )
 
 

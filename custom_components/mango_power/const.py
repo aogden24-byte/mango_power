@@ -38,7 +38,22 @@ CONF_USER_ID = "user_id"
 SCAN_INTERVAL = timedelta(seconds=60)
 
 # Models this integration understands (modelData.name from /device/info)
-SUPPORTED_MODELS = {"mpe": "Mango Power E"}
+MODEL_E = "mpe"  # Mango Power E battery station
+MODEL_S = "lbz_inverter"  # Mango Power S / S Pro microinverter
+MODEL_GW = "lbz_gw"  # Gateway Lite (grid meter for the S)
+SUPPORTED_MODELS = {MODEL_E: "Mango Power E", MODEL_S: "Mango Power S", MODEL_GW: "Gateway Lite"}
+
+# The Gateway Lite's own realtime data is empty on systems without a battery. Its meter
+# readings are reported in the realtime data of the root inverter it is paired with.
+METER_KEYS = (
+    "meterPhaseAVoltage",
+    "meterPhaseACurrent",
+    "meterPhaseAActivePower",
+    "meterPhaseAReactivePower",
+    "meterPhaseAApparentPower",
+    "meterPhaseAPowerFactor",
+    "meterRssi",
+)
 
 # Controls exposed by the app's Mango Power E page (sendDeviceCommand)
 MAX_AC_INPUT_OPTIONS = ["10", "15", "30"]  # US; 30 A requires the 30 A cable
@@ -46,6 +61,9 @@ BACKUP_SOC_OPTIONS = ["85", "90", "95"]
 
 # Options
 CONF_CAPACITY_WH = "capacity_wh"
+CONF_EXPORT_PRICE = "export_price"  # per kWh, in the Home Assistant currency
+CONF_IMPORT_PRICE = "import_price"
+DEFAULT_PRICE = 0.0
 # Mango Power E: 3.5 kWh LFP (51.2 V nominal, ~67 Ah). Add expansion batteries in the options.
 DEFAULT_CAPACITY_WH = 3500
 

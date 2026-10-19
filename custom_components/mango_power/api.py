@@ -144,6 +144,28 @@ class MangoApi:
         walk(res)
         return list(found.values())
 
+    async def list_sites(self) -> list[dict]:
+        """Sites (id, name, timezone offset) on the account."""
+        res = await self.call("/site/list", {"user_id": self.user_id, "page_size": 1000})
+        sites = res.get("list") if isinstance(res, dict) else None
+        return [s for s in (sites or []) if isinstance(s, dict) and s.get("id")]
+
+    async def _site_call(self, path: str, site_id: str, tz: str) -> dict:
+        """The app's request body for site endpoints is not documented: try the simplest first."""
+        try:
+            return await self.call(path, {"site_id": site_id})
+        except MangoAuthError:
+            raise
+        except MangoError:
+            return await self.call(path, {"site_id": site_id, "timezone": tz})
+
+    async def site_realtime(self, site_id: str, tz: str) -> dict:
+        """Whole-site totals: pv_power, load_power, grid_power (both phases), battery_power."""
+        return await self._site_call("/site/realtime", site_id, tz)
+
+    async def site_energy_today(self, site_id: str, tz: str) -> dict:
+        return await self._site_call("/site/energy/today", site_id, tz)
+
     async def device_info(self, device_id: str) -> dict:
         return await self.call("/device/info", {"device_id": device_id})
 

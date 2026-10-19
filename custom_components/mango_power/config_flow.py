@@ -24,6 +24,9 @@ from .const import (
     CONF_CAPACITY_WH,
     CONF_CODE,
     CONF_EXPIRES_AT,
+    CONF_EXPORT_PRICE,
+    CONF_IMPORT_PRICE,
+    DEFAULT_PRICE,
     CONF_METHOD,
     CONF_REFRESH_TOKEN,
     CONF_REGION,
@@ -162,9 +165,16 @@ class MangoOptionsFlow(OptionsFlow):
         if user_input is not None:
             return self.async_create_entry(data=user_input)
         current = self.config_entry.options.get(CONF_CAPACITY_WH, DEFAULT_CAPACITY_WH)
+        opts = self.config_entry.options
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
-                {vol.Required(CONF_CAPACITY_WH, default=current): vol.All(vol.Coerce(int), vol.Range(min=500, max=50000))}
+                {
+                    vol.Required(CONF_CAPACITY_WH, default=current): vol.All(vol.Coerce(int), vol.Range(min=500, max=50000)),
+                    vol.Required(CONF_EXPORT_PRICE, default=opts.get(CONF_EXPORT_PRICE, DEFAULT_PRICE)):
+                        vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
+                    vol.Required(CONF_IMPORT_PRICE, default=opts.get(CONF_IMPORT_PRICE, DEFAULT_PRICE)):
+                        vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
+                }
             ),
         )

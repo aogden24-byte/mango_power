@@ -2,8 +2,7 @@
   "domain": "mango_power",
   "name": "Mango Power (unofficial)",
   "codeowners": [
-    "@aogden24-byte",
-    "@Bleschke"
+    "@aogden24-byte"
   ],
   "config_flow": true,
   "documentation": "https://github.com/aogden24-byte/mango_power",
@@ -11,5 +10,5 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/aogden24-byte/mango_power/issues",
   "requirements": [],
-  "version": "0.5.1"
+  "version": "0.6.0"
 }

@@ -7,7 +7,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import MangoConfigEntry
-from .const import MODEL_GW, MODEL_S
+from .const import MODEL_E, MODEL_GW, MODEL_S
 from .entity import MangoEntity
 
 # (data key, name, device class, icon)
@@ -36,11 +36,13 @@ BINARY_BY_MODEL = {MODEL_S: BINARY_S, MODEL_GW: BINARY_GW}
 async def async_setup_entry(
     hass: HomeAssistant, entry: MangoConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
-    async_add_entities(
+    ents = [
         MangoBinary(c, *spec)
         for c in entry.runtime_data.coordinators
         for spec in BINARY_BY_MODEL.get(c.model, BINARY)
-    )
+    ]
+    ents += [MangoBleConnected(c) for c in entry.runtime_data.coordinators if c.model == MODEL_E]
+    async_add_entities(ents)
 
 
 class MangoBinary(MangoEntity, BinarySensorEntity):
@@ -56,3 +58,24 @@ class MangoBinary(MangoEntity, BinarySensorEntity):
     @property
     def is_on(self) -> bool:
         return bool(self.value)
+
+
+class MangoBleConnected(MangoEntity, BinarySensorEntity):
+    """Whether the local Bluetooth link is up."""
+
+    _attr_name = "Bluetooth connected"
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:bluetooth"
+
+    def __init__(self, coordinator) -> None:
+        super().__init__(coordinator, "ble_connected")
+
+    @property
+    def is_on(self) -> bool:
+        link = self.coordinator.ble_link
+        return bool(link and link.connected)
+
+    @property
+    def available(self) -> bool:
+        return True

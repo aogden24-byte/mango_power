@@ -13,6 +13,7 @@ from homeassistant.core import callback
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
+    BooleanSelector,
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
@@ -20,12 +21,16 @@ from homeassistant.helpers.selector import (
 
 from .api import MangoApi, MangoAuth, MangoAuthError, MangoError, user_id_from_token
 from .const import (
+    BLE_MODE_AUTO,
+    BLE_MODE_OFF,
+    BLE_OPTION_PREFIX,
     CONF_ACCESS_TOKEN,
     CONF_CAPACITY_WH,
     CONF_CODE,
     CONF_EXPIRES_AT,
     CONF_EXPORT_PRICE,
     CONF_IMPORT_PRICE,
+    CONF_RAW_FIELDS,
     DEFAULT_PRICE,
     CONF_METHOD,
     CONF_REFRESH_TOKEN,
@@ -158,23 +163,61 @@ class MangoPowerConfigFlow(ConfigFlow, domain=DOMAIN):
         return await self.async_step_user()
 
 
+RAW_LABEL = "Advanced: create a sensor for every Bluetooth protocol field"
+
+
 class MangoOptionsFlow(OptionsFlow):
-    """Battery capacity (Wh) used for stored energy / time estimates."""
+    """Battery capacity, energy prices, plus Bluetooth mode per Mango Power E unit."""
+
+    def _e_coords(self) -> list:
+        coords = getattr(getattr(self.config_entry, "runtime_data", None), "coordinators", None) or []
+        return [c for c in coords if getattr(c, "model", "mpe") == "mpe"]
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        labels = {f"Bluetooth - {c.device_name} (...{c.sn[-3:]})": c for c in self._e_coords()}
+
         if user_input is not None:
-            return self.async_create_entry(data=user_input)
-        current = self.config_entry.options.get(CONF_CAPACITY_WH, DEFAULT_CAPACITY_WH)
+            data = {
+                CONF_CAPACITY_WH: user_input[CONF_CAPACITY_WH],
+                CONF_EXPORT_PRICE: user_input[CONF_EXPORT_PRICE],
+                CONF_IMPORT_PRICE: user_input[CONF_IMPORT_PRICE],
+                CONF_RAW_FIELDS: bool(user_input.get(RAW_LABEL, False)),
+            }
+            for label, coord in labels.items():
+                data[f"{BLE_OPTION_PREFIX}{coord.sn}"] = user_input.get(label, BLE_MODE_AUTO)
+            return self.async_create_entry(data=data)
+
         opts = self.config_entry.options
-        return self.async_show_form(
-            step_id="init",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_CAPACITY_WH, default=current): vol.All(vol.Coerce(int), vol.Range(min=500, max=50000)),
-                    vol.Required(CONF_EXPORT_PRICE, default=opts.get(CONF_EXPORT_PRICE, DEFAULT_PRICE)):
-                        vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
-                    vol.Required(CONF_IMPORT_PRICE, default=opts.get(CONF_IMPORT_PRICE, DEFAULT_PRICE)):
-                        vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
-                }
-            ),
-        )
+        schema: dict = {
+            vol.Required(CONF_CAPACITY_WH, default=opts.get(CONF_CAPACITY_WH, DEFAULT_CAPACITY_WH)):
+                vol.All(vol.Coerce(int), vol.Range(min=500, max=50000)),
+            vol.Required(CONF_EXPORT_PRICE, default=opts.get(CONF_EXPORT_PRICE, DEFAULT_PRICE)):
+                vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
+            vol.Required(CONF_IMPORT_PRICE, default=opts.get(CONF_IMPORT_PRICE, DEFAULT_PRICE)):
+                vol.All(vol.Coerce(float), vol.Range(min=0, max=100)),
+        }
+        for label, coord in labels.items():
+            current = opts.get(f"{BLE_OPTION_PREFIX}{coord.sn}", BLE_MODE_AUTO)
+            choices = [
+                {"value": BLE_MODE_AUTO, "label": "Auto - best signal, automatic failover"},
+                {"value": BLE_MODE_OFF, "label": "Off - cloud only"},
+            ]
+            for source, name, rssi in self._scanners(coord):
+                choices.append({"value": source, "label": f"Only via {name} ({rssi} dBm)"})
+            if current not in [c["value"] for c in choices]:
+                choices.append({"value": current, "label": f"Only via {current} (not in range right now)"})
+            schema[vol.Required(label, default=current)] = SelectSelector(
+                SelectSelectorConfig(options=choices, mode=SelectSelectorMode.DROPDOWN)
+            )
+        # Advanced option last, as an explicit toggle selector with its own label
+        schema[vol.Required(RAW_LABEL, default=bool(opts.get(CONF_RAW_FIELDS, False)))] = BooleanSelector()
+        return self.async_show_form(step_id="init", data_schema=vol.Schema(schema))
+
+    def _scanners(self, coord) -> list[tuple[str, str, int]]:
+        if "bluetooth" not in self.hass.config.components:
+            return []
+        from .ble import find_address, scanners_for
+
+        address = (coord.ble_link.address if coord.ble_link and coord.ble_link.address else None) \
+            or find_address(self.hass, coord.sn)
+        return scanners_for(self.hass, address) if address else []

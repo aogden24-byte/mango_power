@@ -1,6 +1,9 @@
 {
   "domain": "mango_power",
   "name": "Mango Power (unofficial)",
+  "after_dependencies": [
+    "bluetooth"
+  ],
   "codeowners": [
     "@aogden24-byte"
   ],
@@ -10,5 +13,5 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/aogden24-byte/mango_power/issues",
   "requirements": [],
-  "version": "0.6.0"
+  "version": "0.7.0"
 }

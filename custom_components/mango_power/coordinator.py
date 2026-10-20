@@ -2,16 +2,29 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
 from .api import MangoApi, MangoAuthError, MangoError
-from .const import DOMAIN, METER_KEYS, MODEL_E, MODEL_GW, MODEL_S, SCAN_INTERVAL, SUPPORTED_MODELS
+from .const import (
+    BLE_OVERLAY,
+    BLE_STALE_AFTER,
+    CLOUD_LIVE_KEYS,
+    CLOUD_STALE_AFTER,
+    DOMAIN,
+    METER_KEYS,
+    MODEL_E,
+    MODEL_GW,
+    MODEL_S,
+    SCAN_INTERVAL,
+    SUPPORTED_MODELS,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -77,6 +90,13 @@ class MangoDeviceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         else:
             self.device_name = name or f"{self.model_name} {self.sn[-3:]}"
         self.firmware: str | None = None
+        # Local Bluetooth overlay (Mango Power E only; stays empty for S / Gateway Lite).
+        self.ble: dict[str, Any] = {}       # latest decoded Bluetooth values
+        self.ble_time: float | None = None   # monotonic time of last Bluetooth update
+        self.ble_link = None                 # MangoBleLink, set in __init__.py
+        self.ble_wall = None                 # wall-clock time of last Bluetooth update
+        self.raw: dict[str, object] = {}     # every protocol field seen (when raw fields are enabled)
+        self.raw_new_cb = None               # set by sensor.py: called with new raw keys
         super().__init__(
             hass,
             _LOGGER,
@@ -147,6 +167,86 @@ class MangoDeviceCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise ConfigEntryAuthFailed(str(err)) from err
         except MangoError as err:
             raise HomeAssistantError(f"Mango Power command failed: {err}") from err
+
+    # ---------------------------------------------------------------- Bluetooth merge
+
+    @callback
+    def async_ble_update(self, decoded: dict[str, Any], when: float) -> None:
+        """New Bluetooth data (partial updates are merged)."""
+        for k, v in decoded.items():
+            if not k.startswith("_") and v is not None:
+                self.ble[k] = v
+        self.ble_time = when
+        self.ble_wall = dt_util.utcnow()
+        self.async_update_listeners()
+
+    @property
+    def ble_fresh(self) -> bool:
+        return self.ble_time is not None and time.monotonic() - self.ble_time < BLE_STALE_AFTER
+
+    def ble_get(self, key: str) -> Any:
+        """Bluetooth-only value, None when Bluetooth isn't current."""
+        return self.ble.get(key) if self.ble_fresh else None
+
+    def cloud_get(self, key: str) -> Any:
+        if not self.last_update_success:
+            return None
+        if key in CLOUD_LIVE_KEYS and not self.cloud_live:
+            return None
+        return (self.data or {}).get(key)
+
+    def source_of(self, key: str) -> str | None:
+        if key in BLE_OVERLAY and self.ble_fresh and self.ble.get(BLE_OVERLAY[key]) is not None:
+            return "bluetooth"
+        if key == "batteryPower":
+            return "bluetooth" if self.ble_get("batteryPower") is not None else "estimate"
+        return "cloud" if self.cloud_get(key) is not None else None
+
+    @property
+    def cloud_live(self) -> bool:
+        """The unit itself is reporting to the cloud (the cloud keeps the last values when it's off)."""
+        d = self.data or {}
+        if not self.last_update_success or not d.get("online"):
+            return False
+        last = d.get("lastActiveAt")
+        if not last:
+            return True
+        ts = dt_util.parse_datetime(last)
+        return ts is None or (dt_util.utcnow() - ts).total_seconds() < CLOUD_STALE_AFTER
+
+    @property
+    def merged(self) -> dict[str, Any]:
+        """Cloud data with Bluetooth values laid over it where Bluetooth is current."""
+        d = dict(self.data or {}) if self.last_update_success else {}
+        if not self.cloud_live:
+            for key in CLOUD_LIVE_KEYS:  # frozen last values from a unit that's off
+                d.pop(key, None)
+        if self.ble_fresh:
+            for key, bkey in BLE_OVERLAY.items():
+                if self.ble.get(bkey) is not None:
+                    d[key] = self.ble[bkey]
+            grid = self.ble.get("gridPower")
+            if grid is not None:  # positive = import (unconfirmed sign), negative = export
+                d["gridImportPower"] = max(grid, 0)
+                d["gridExportPower"] = max(-grid, 0)
+            if self.ble.get("batteryPower") is not None:
+                d["batteryPower"] = self.ble["batteryPower"]
+        else:
+            d.pop("batteryPower", None)  # cloud value is always 0 - never use it
+        return d
+
+    @property
+    def active_source(self) -> str:
+        if self.ble_fresh:
+            return "bluetooth"
+        return "cloud" if self.last_update_success else "none"
+
+    @callback
+    def async_raw_update(self, fields: dict[str, object]) -> None:
+        new = [k for k in fields if k not in self.raw]
+        self.raw.update(fields)
+        if new and self.raw_new_cb:
+            self.raw_new_cb(new)
 
 
 class MangoSiteCoordinator(DataUpdateCoordinator[dict[str, Any]]):

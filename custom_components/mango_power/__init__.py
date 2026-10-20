@@ -12,11 +12,16 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import MangoApi, MangoAuthError, MangoError
 from .const import (
+    BLE_MODE_AUTO,
+    BLE_OPTION_PREFIX,
+    BLE_POLL_INTERVAL,
     CONF_ACCESS_TOKEN,
     CONF_EXPIRES_AT,
+    CONF_RAW_FIELDS,
     CONF_REFRESH_TOKEN,
     CONF_REGION,
     DEFAULT_REGION,
+    MODEL_E,
     MODEL_GW,
     MODEL_S,
     REGIONS,
@@ -154,6 +159,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MangoConfigEntry) -> boo
         api=api, coordinators=coordinators, options=dict(entry.options), sites=sites
     )
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    _start_bluetooth(hass, entry, coordinators)
     entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     return True
 
@@ -164,5 +170,24 @@ async def _async_options_updated(hass: HomeAssistant, entry: MangoConfigEntry) -
         await hass.config_entries.async_reload(entry.entry_id)
 
 
+def _start_bluetooth(hass: HomeAssistant, entry: MangoConfigEntry, coordinators) -> None:
+    """Optional local Bluetooth link per Mango Power E (Home Assistant Bluetooth / ESPHome proxies)."""
+    if "bluetooth" not in hass.config.components:
+        _LOGGER.debug("Bluetooth integration not loaded - cloud only")
+        return
+    from .ble import MangoBleLink  # imported here so cloud-only setups never need bleak
+
+    for coord in coordinators:
+        if coord.model != MODEL_E:  # only the E battery station speaks the BLE protocol
+            continue
+        mode = entry.options.get(f"{BLE_OPTION_PREFIX}{coord.sn}", BLE_MODE_AUTO)
+        coord.ble_link = MangoBleLink(hass, coord, mode, BLE_POLL_INTERVAL)
+        coord.ble_link.raw_enabled = bool(entry.options.get(CONF_RAW_FIELDS, False))
+        coord.ble_link.start()
+
+
 async def async_unload_entry(hass: HomeAssistant, entry: MangoConfigEntry) -> bool:
+    for coord in getattr(entry.runtime_data, "coordinators", []):
+        if getattr(coord, "ble_link", None):
+            await coord.ble_link.stop()
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

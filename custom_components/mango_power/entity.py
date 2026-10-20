@@ -26,9 +26,20 @@ class MangoEntity(CoordinatorEntity[MangoDeviceCoordinator]):
         )
 
     @property
+    def _src(self) -> dict:
+        """Cloud data with Bluetooth overlaid (device coordinators); plain data otherwise."""
+        merged = getattr(self.coordinator, "merged", None)
+        return merged if merged is not None else (self.coordinator.data or {})
+
+    @property
     def value(self):
-        return (self.coordinator.data or {}).get(self._key)
+        return self._src.get(self._key)
+
+    @property
+    def data_available(self) -> bool:
+        """Cloud reachable or Bluetooth current."""
+        return self.coordinator.last_update_success or getattr(self.coordinator, "ble_fresh", False)
 
     @property
     def available(self) -> bool:
-        return super().available and self.value is not None
+        return self.data_available and self.value is not None

@@ -48,8 +48,8 @@
   "options": {
     "step": {
       "init": {
-        "title": "Battery and energy prices",
-        "description": "Battery capacity (Wh) is used for stored energy and time-to-full/empty (Mango Power E is 3500 Wh; add 3500 per expansion battery). Prices are per kWh in your Home Assistant currency; set to 0 to turn the estimated value sensors off.",
+        "title": "Battery, energy prices and Bluetooth",
+        "description": "Battery capacity (Wh) is used for stored energy and time-to-full/empty (Mango Power E is 3500 Wh; add 3500 per expansion battery). Prices are per kWh in your Home Assistant currency; set to 0 to turn the estimated value sensors off.\n\nBluetooth: each Mango Power E uses cloud data always, and Bluetooth when it's in range of a Bluetooth proxy or adapter (Wi-Fi module firmware W1.1.9 or newer). Auto picks the best signal; or pin a unit to one proxy, or turn it off.",
         "data": {
           "capacity_wh": "Capacity (Wh)",
           "export_price": "Export price per kWh (what you are paid)",

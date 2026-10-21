@@ -35,7 +35,8 @@ from homeassistant.util import dt as dt_util
 
 from . import MangoConfigEntry
 from .const import (
-    CONF_CAPACITY_WH, CONF_EXPORT_PRICE, CONF_IMPORT_PRICE, DEFAULT_CAPACITY_WH, DEFAULT_PRICE,
+    BLE_OVERLAY, CLOUD_LIVE_KEYS, CONF_CAPACITY_WH, CONF_EXPORT_PRICE, CONF_IMPORT_PRICE,
+    CONF_RAW_FIELDS, DEFAULT_CAPACITY_WH, DEFAULT_PRICE,
     DOMAIN, MAX_INTEGRATION_GAP_S, MODEL_GW, MODEL_S,
 )
 from .coordinator import MangoDeviceCoordinator
@@ -60,7 +61,13 @@ def output_power(d: Data) -> float | None:
 
 
 def net_power(d: Data) -> float | None:
-    """Estimated battery power: + charging, - discharging (ignores conversion losses)."""
+    """Battery power: + charging, - discharging.
+
+    Real pack V x I when Bluetooth is current (batteryPower present), otherwise estimated as
+    (solar + grid in) - (AC + DC out), which ignores conversion losses.
+    """
+    if isinstance(d.get("batteryPower"), (int, float)):
+        return float(d["batteryPower"])
     i, o = input_power(d), output_power(d)
     if i is None and o is None:
         return None
@@ -487,6 +494,13 @@ async def async_setup_entry(
                               daily=True, enabled=(key == "solar_energy"))
             for key, name, fn, icon in ENERGY
         ]
+        # Bluetooth-only sensors, per-source comparison and link diagnostics (E only)
+        ents += [MangoBleSensor(coord, desc) for desc in BLE_SENSORS]
+        ents += [MangoSourceSensor(coord, key, name, src)
+                 for key, name in SOURCE_COMPARE for src in ("cloud", "bluetooth")]
+        ents += [MangoDiagSensor(coord, key) for key in ("active_source", "ble_via", "ble_rssi", "ble_last")]
+        if entry.options.get(CONF_RAW_FIELDS, False):
+            _setup_raw(coord, async_add_entities)
     # Whole-site totals from the cloud (both grid phases).
     for site in entry.runtime_data.sites:
         ents += [MangoSensor(site, desc, cap) for desc in SITE_SENSORS]
@@ -524,12 +538,25 @@ class MangoSensor(MangoEntity, SensorEntity):
 
     @property
     def native_value(self):
-        return self.entity_description.value_fn(self.coordinator.data or {}, self._cap)
+        return self.entity_description.value_fn(self._src, self._cap)
 
     @property
     def available(self) -> bool:
-        # derived values (time to full etc.) may legitimately be None -> 'unknown', not unavailable
-        return self.coordinator.last_update_success
+        # Live and calculated E values need a unit that is actually reporting (the cloud keeps
+        # serving the last values after a unit is switched off). Derived values may still
+        # legitimately be None (e.g. time to full while discharging) -> 'unknown'.
+        if self._key in LIVE_OR_DERIVED and hasattr(self.coordinator, "cloud_live"):
+            return self.coordinator.cloud_live or self.coordinator.ble_fresh
+        return self.data_available
+
+    @property
+    def extra_state_attributes(self):
+        src_of = getattr(self.coordinator, "source_of", None)
+        if src_of is None:  # site coordinator has no Bluetooth source
+            return None
+        key = "batteryPower" if self._key == "net_power" else self._key
+        src = src_of(key)
+        return {"source": src} if src else None
 
 
 class MangoEnergySensor(MangoEntity, RestoreSensor):
@@ -577,7 +604,7 @@ class MangoEnergySensor(MangoEntity, RestoreSensor):
         return {"day": self._day} if self._daily else None
 
     def _sample(self) -> None:
-        p = self._power_fn(self.coordinator.data or {}) if self.coordinator.last_update_success else None
+        p = self._power_fn(self._src) if self.data_available else None
         now = time.monotonic()
         if p is not None and self._last_p is not None and self._last_t is not None:
             dt = now - self._last_t
@@ -644,3 +671,320 @@ class MangoValueSensor(MangoEntity, SensorEntity):
     @property
     def available(self) -> bool:
         return True
+
+
+# ------------------------------------------------------------------ Bluetooth-only sensors (E)
+
+
+@dataclass(frozen=True, kw_only=True)
+class MangoBleDescription(SensorEntityDescription):
+    ble_fn: Callable[[Data], Any]
+
+
+def _pack(i: int, field: str) -> Callable[[Data], Any]:
+    def fn(b: Data) -> Any:
+        packs = b.get("packs") or []
+        return packs[i].get(field) if i < len(packs) else None
+    return fn
+
+
+def _counter(src: str, field: str) -> Callable[[Data], Any]:
+    return lambda b: ((b.get("energy") or {}).get(src) or {}).get(field)
+
+
+_BMS_WARN = {0: "ok", 1: "no power", 2: "full", 3: "discharge over-current", 4: "charge over-current",
+             5: "temperature gap", 6: "cell voltage gap", 7: "MOSFET over-temp", 8: "under-temp",
+             9: "over-temp", 10: "cell under-voltage", 11: "cell over-voltage",
+             12: "module under-voltage", 13: "module over-voltage"}
+_BMS_FAULT = {0: "ok", 1: "cell invalid", 2: "discharge over-current", 3: "charge over-current",
+              4: "short circuit", 5: "MOSFET over-temp", 6: "under-temp", 7: "over-temp",
+              8: "cell over-voltage", 9: "cell under-voltage", 10: "module over-voltage",
+              11: "module under-voltage"}
+
+
+def _codes(b: Data, i: int, field: str) -> str | None:
+    packs = b.get("packs") or []
+    if i >= len(packs):
+        return None
+    codes = [c for c in (packs[i].get(field) or []) if c]
+    if not codes:
+        return "none"
+    names = _BMS_WARN if field == "warnings" else _BMS_FAULT
+    return ", ".join(names.get(c, f"code {c}") for c in codes)
+
+
+_PCS_ERR = {1: "frequency lost", 2: "pre-charge failed", 3: "grid voltage lost", 4: "fan fault",
+            5: "load over power", 6: "load over rate", 7: "load under rate", 8: "load under-voltage",
+            9: "load over-voltage", 10: "bypass over rate", 11: "parallel rate mismatch",
+            12: "grid over-voltage", 13: "grid under-voltage", 14: "grid lost", 15: "grid over rate",
+            16: "grid under rate", 17: "AC bus over-voltage", 18: "AC bus under-voltage",
+            19: "AC over-current", 20: "fuse fault", 21: "DC over-voltage", 22: "DC under-voltage",
+            23: "DC short circuit", 24: "DC over-current", 25: "buck over-current",
+            26: "MOSFET over-temp", 27: "PCB over-temp", 28: "PFC not ready",
+            29: "DC under-voltage over power", 30: "DC bus over-voltage", 31: "DC bus under-voltage",
+            32: "parallel comm fault", 33: "EEPROM fault", 34: "LLC over-current",
+            35: "internal comm fault", 36: "PV over-voltage", 37: "PV under-voltage",
+            38: "PV over-current", 39: "PV reverse", 50: "PFC temp fault", 51: "DC high temp",
+            52: "DC low temp", 53: "parallel rate fault", 54: "PFC MOSFET over-temp",
+            55: "DC MOSFET over-temp", 56: "PTC over-temp", 57: "AC load over-voltage",
+            58: "AC load under-voltage"}
+
+
+def _pcs_codes(b: Data) -> str | None:
+    codes = b.get("pcsErrors")
+    if codes is None:
+        return None
+    codes = [c for c in codes if c]
+    return ", ".join(_PCS_ERR.get(c, f"code {c}") for c in codes) if codes else "none"
+
+
+LIVE_OR_DERIVED = set(CLOUD_LIVE_KEYS) | {
+    "input_power", "output_power", "net_power", "stored_energy", "energy_to_full",
+    "time_to_full", "time_to_empty",
+}
+
+MPPT_MIN_V = 20  # below this the input is floating (reads ~13-17 V with nothing connected)
+
+
+def _mppt_volt(b: Data) -> float | None:
+    v = b.get("mpptVoltRaw")
+    if v is None:
+        return None
+    return 0 if v < MPPT_MIN_V else v
+
+
+def _mppt_current(b: Data) -> float | None:
+    v, p = b.get("mpptVoltRaw"), b.get("pvPower")
+    if v is None or p is None:
+        return None
+    return 0.0 if v < MPPT_MIN_V else round(p / v, 2)
+
+
+def _ble(k: str) -> Callable[[Data], Any]:
+    return lambda b: b.get(k)
+
+
+def _ble_sensor(key, name, fn, unit=None, dc=None, sc=SensorStateClass.MEASUREMENT, enabled=True,
+                diag=False, icon=None, prec=None) -> MangoBleDescription:
+    return MangoBleDescription(
+        key=f"ble_{key}", name=name, ble_fn=fn, native_unit_of_measurement=unit, device_class=dc,
+        state_class=sc, entity_registry_enabled_default=enabled, icon=icon,
+        suggested_display_precision=prec,
+        entity_category=EntityCategory.DIAGNOSTIC if diag else None,
+    )
+
+
+_V, _A, _W, _C = UnitOfElectricPotential.VOLT, "A", UnitOfPower.WATT, UnitOfTemperature.CELSIUS
+_pack_sensors = []
+for _i in range(2):  # pack 1 = main battery, pack 2 = first expansion battery (disabled by default)
+    _n, _en = f"Battery pack {_i + 1}", _i == 0
+    _pack_sensors += [
+        _ble_sensor(f"pack{_i+1}_voltage", f"{_n} voltage", _pack(_i, "volt"), _V, SensorDeviceClass.VOLTAGE, enabled=_en, prec=3),
+        _ble_sensor(f"pack{_i+1}_current", f"{_n} current", _pack(_i, "current"), _A, SensorDeviceClass.CURRENT, enabled=_en, prec=2),
+        _ble_sensor(f"pack{_i+1}_power", f"{_n} power", _pack(_i, "power"), _W, SensorDeviceClass.POWER, enabled=_en, prec=1),
+        _ble_sensor(f"pack{_i+1}_temperature", f"{_n} temperature", _pack(_i, "temp"), _C, SensorDeviceClass.TEMPERATURE, enabled=_en, prec=1),
+        _ble_sensor(f"pack{_i+1}_soc", f"{_n} state of charge", _pack(_i, "soc"), PERCENTAGE, SensorDeviceClass.BATTERY, enabled=_en, prec=0),
+        _ble_sensor(f"pack{_i+1}_capacity", f"{_n} capacity", _pack(_i, "capacity"), "Ah", None, enabled=_en, diag=True, icon="mdi:battery-heart-variant", prec=2),
+    ]
+
+BLE_SENSORS: tuple[MangoBleDescription, ...] = (
+    *_pack_sensors,
+    _ble_sensor("ac_voltage", "Inverter AC voltage", _ble("acVolt"), _V, SensorDeviceClass.VOLTAGE, prec=1),
+    _ble_sensor("dc_voltage", "Inverter DC voltage", _ble("dcVolt"), _V, SensorDeviceClass.VOLTAGE, prec=2),
+    _ble_sensor("dc_current", "Inverter DC current", _ble("dcCurrent"), _A, SensorDeviceClass.CURRENT, prec=2),
+    _ble_sensor("inlet_temp", "Air inlet temperature", _ble("inletTemp"), _C, SensorDeviceClass.TEMPERATURE, prec=1),
+    _ble_sensor("outlet_temp", "Air outlet temperature", _ble("outletTemp"), _C, SensorDeviceClass.TEMPERATURE, prec=1),
+    _ble_sensor("soc_real", "Real state of charge", _ble("socReal"), PERCENTAGE, SensorDeviceClass.BATTERY, diag=True, prec=0),
+    _ble_sensor("work_state", "Work state", _ble("workState"), sc=None, diag=True, icon="mdi:state-machine"),
+    _ble_sensor("system_state", "System state", _ble("sysState"), sc=None, diag=True, icon="mdi:state-machine"),
+    _ble_sensor("warning_code", "Warning code", _ble("warning"), sc=None, diag=True, icon="mdi:alert"),
+    _ble_sensor("error_code", "Error code", _ble("error"), sc=None, diag=True, icon="mdi:alert-circle"),
+    _ble_sensor("mppt_voltage", "Solar input voltage", _mppt_volt, _V, SensorDeviceClass.VOLTAGE, prec=0),
+    _ble_sensor("mppt_current_calc", "Solar input current (calculated)", _mppt_current, _A, SensorDeviceClass.CURRENT, prec=2),
+    _ble_sensor("mppt_volt_raw", "MPPT input voltage (raw)", _ble("mpptVoltRaw"), enabled=False, diag=True, icon="mdi:solar-power-variant", prec=0),
+    _ble_sensor("mppt_current_raw", "MPPT input current (raw)", _ble("mpptCurrentRaw"), enabled=False, diag=True, icon="mdi:solar-power-variant", prec=0),
+    _ble_sensor("mppt_power_raw", "MPPT input power (raw)", _ble("mpptPowerRaw"), enabled=False, diag=True, icon="mdi:solar-power-variant", prec=0),
+    _ble_sensor("mppt_total_raw", "MPPT input total (raw)", _ble("mpptTotalRaw"), enabled=False, diag=True, icon="mdi:solar-power-variant", prec=0),
+    _ble_sensor("solar_volt_raw", "Solar input voltage (collector, raw)", _counter("solar", "volt"), enabled=False, diag=True, icon="mdi:solar-power-variant", prec=0),
+    _ble_sensor("solar_current_raw", "Solar input current (collector, raw)", _counter("solar", "current"), enabled=False, diag=True, icon="mdi:solar-power-variant", prec=0),
+    _ble_sensor("pack1_state_raw", "Battery pack 1 state (raw)", _pack(0, "stateRaw"), sc=None, diag=True, icon="mdi:numeric"),
+    _ble_sensor("report_interval", "Report interval (setting)", _ble("reportInterval"), "s", None, sc=None, diag=True, icon="mdi:timer-cog-outline"),
+    _ble_sensor("battery_soh", "Battery state of health", _ble("batterySoh"), PERCENTAGE, diag=True, icon="mdi:battery-heart", prec=0),
+    _ble_sensor("pack1_warnings", "Battery pack 1 warning codes", lambda b: _codes(b, 0, "warnings"), sc=None, diag=True, icon="mdi:alert"),
+    _ble_sensor("pack1_faults", "Battery pack 1 fault codes", lambda b: _codes(b, 0, "faults"), sc=None, diag=True, icon="mdi:alert-circle"),
+    _ble_sensor("pcs_status", "Inverter status codes", lambda b: _pcs_codes(b), sc=None, diag=True, icon="mdi:information-outline"),
+    _ble_sensor("set_max_charge_current", "Max AC input (unit setting)", _ble("setMaxChargeCurrent"), "A", None, sc=None, diag=True, icon="mdi:current-ac"),
+    _ble_sensor("set_backup_soc", "Backup SOC (unit setting)", _ble("setUpsAutoChargeSoc"), PERCENTAGE, None, sc=None, diag=True, icon="mdi:battery-lock"),
+    *[_ble_sensor(f"ver_{k.lower()}", f"Firmware {label}", _ble(f"ver{k}"), sc=None, diag=True, icon="mdi:chip")
+      for k, label in (("Ems", "EMS"), ("PcsPfc", "inverter PFC"), ("PcsDc", "inverter DC"), ("Mppt", "MPPT"), ("Bms", "BMS"))],
+    _ble_sensor("factory_time", "Factory date", _ble("factoryTime"), sc=None, diag=True, icon="mdi:factory"),
+    *[
+        _ble_sensor(f"counter_{src}_{f}", f"{label} {f} (device counter, raw)", _counter(src, f),
+                    sc=SensorStateClass.TOTAL_INCREASING, enabled=False, diag=True, icon="mdi:counter")
+        for src, label in (("solar", "Solar"), ("load", "Load"), ("grid_in", "Grid in"),
+                           ("grid_out", "Grid out"), ("battery_in", "Battery in"), ("battery_out", "Battery out"))
+        for f in ("today", "total")
+    ],
+)
+
+
+class MangoBleSensor(MangoEntity, SensorEntity):
+    """Only available while Bluetooth is connected and current."""
+
+    entity_description: MangoBleDescription
+
+    def __init__(self, coordinator, description: MangoBleDescription) -> None:
+        super().__init__(coordinator, description.key)
+        self.entity_description = description
+
+    @property
+    def native_value(self):
+        return self.entity_description.ble_fn(self.coordinator.ble) if self.coordinator.ble_fresh else None
+
+    @property
+    def available(self) -> bool:
+        return self.native_value is not None
+
+
+# ------------------------------------------------------------------ per-source comparison (power users)
+
+SOURCE_COMPARE = (
+    ("soc", "State of charge"),
+    ("pvPower", "Solar power"),
+    ("gridImportPower", "Grid input power"),
+    ("loadPower", "AC output power"),
+    ("loadDcPower", "DC output power"),
+    ("batteryPower", "Battery power"),
+)
+
+
+class MangoSourceSensor(MangoEntity, SensorEntity):
+    """The same measurement from one specific source. Disabled by default."""
+
+    _attr_entity_registry_enabled_default = False
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator, key: str, name: str, source: str) -> None:
+        super().__init__(coordinator, f"{key}_{source}")
+        self._src_key, self._source = key, source
+        self._attr_name = f"{name} ({'Bluetooth' if source == 'bluetooth' else 'cloud'})"
+        if key == "soc":
+            self._attr_native_unit_of_measurement = PERCENTAGE
+            self._attr_device_class = SensorDeviceClass.BATTERY
+            self._attr_suggested_display_precision = 0
+        else:
+            self._attr_native_unit_of_measurement = UnitOfPower.WATT
+            self._attr_device_class = SensorDeviceClass.POWER
+            self._attr_suggested_display_precision = 0 if key != "batteryPower" else 1
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def native_value(self):
+        c = self.coordinator
+        if self._source == "cloud":
+            if self._src_key == "batteryPower":  # cloud has none; show the estimate it would fall back to
+                d = dict(c.data or {})
+                d.pop("batteryPower", None)
+                return net_power(d) if c.last_update_success else None
+            return c.cloud_get(self._src_key)
+        b = c.ble if c.ble_fresh else {}
+        if self._src_key == "gridImportPower":
+            g = b.get("gridPower")
+            return None if g is None else max(g, 0)
+        bkey = BLE_OVERLAY.get(self._src_key, self._src_key)
+        return b.get(bkey)
+
+    @property
+    def available(self) -> bool:
+        return self.native_value is not None
+
+
+# ------------------------------------------------------------------ connection diagnostics
+
+
+class MangoDiagSensor(MangoEntity, SensorEntity):
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    NAMES = {
+        "active_source": ("Data source", "mdi:swap-horizontal"),
+        "ble_via": ("Bluetooth proxy", "mdi:bluetooth-connect"),
+        "ble_rssi": ("Bluetooth signal", "mdi:signal"),
+        "ble_last": ("Bluetooth last update", "mdi:clock-outline"),
+    }
+
+    def __init__(self, coordinator, key: str) -> None:
+        super().__init__(coordinator, key)
+        self._attr_name, self._attr_icon = self.NAMES[key]
+        if key == "ble_rssi":
+            self._attr_native_unit_of_measurement = "dBm"
+            self._attr_device_class = SensorDeviceClass.SIGNAL_STRENGTH
+            self._attr_entity_registry_enabled_default = False
+        if key == "ble_last":
+            self._attr_device_class = SensorDeviceClass.TIMESTAMP
+        if key == "active_source":
+            self._attr_device_class = SensorDeviceClass.ENUM
+            self._attr_options = ["bluetooth", "cloud", "none"]
+
+    @property
+    def native_value(self):
+        c, link = self.coordinator, self.coordinator.ble_link
+        if self._key == "active_source":
+            return c.active_source
+        if self._key == "ble_via":
+            return link.via if link and link.connected else None
+        if self._key == "ble_rssi":
+            return link.rssi if link and link.connected else None
+        return c.ble_wall
+
+    @property
+    def available(self) -> bool:
+        return True
+
+
+# ------------------------------------------------------------------ raw protocol fields (option)
+
+
+def _setup_raw(coord, async_add_entities) -> None:
+    """Create a sensor for every protocol field as it first appears (Configure -> raw fields)."""
+    created: set[str] = set()
+
+    @callback
+    def _add(keys: list[str]) -> None:
+        new = [k for k in keys if k not in created]
+        created.update(new)
+        if new:
+            async_add_entities([MangoRawSensor(coord, k) for k in new])
+
+    coord.raw_new_cb = _add
+    if coord.raw:
+        _add(list(coord.raw))
+
+
+class MangoRawSensor(MangoEntity, SensorEntity):
+    """One raw Bluetooth protocol field, e.g. "rt.5.3.2" (paths use mango.proto field numbers)."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:code-braces"
+
+    def __init__(self, coordinator, path: str) -> None:
+        super().__init__(coordinator, f"raw_{path.replace('.', '_').replace('[', '_').replace(']', '')}")
+        self._path = path
+        self._attr_name = f"Raw {path}"
+        if isinstance(coordinator.raw.get(path), int):
+            self._attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def native_value(self):
+        v = self.coordinator.raw.get(self._path)
+        return v if self.coordinator.ble_fresh or self._path.split(".")[0] in ("static", "setting") else None
+
+    @property
+    def extra_state_attributes(self):
+        v = self.coordinator.raw.get(self._path)
+        if isinstance(v, int):
+            return {"zigzag": (v >> 1) ^ -(v & 1) if v >= 0 else None, "hex": hex(v & ((1 << 64) - 1))}
+        return None
+
+    @property
+    def available(self) -> bool:
+        return self._path in self.coordinator.raw

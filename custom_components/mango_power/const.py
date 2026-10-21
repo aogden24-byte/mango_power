@@ -63,9 +63,30 @@ BACKUP_SOC_OPTIONS = ["85", "90", "95"]
 CONF_CAPACITY_WH = "capacity_wh"
 CONF_EXPORT_PRICE = "export_price"  # per kWh, in the Home Assistant currency
 CONF_IMPORT_PRICE = "import_price"
+CONF_RAW_FIELDS = "raw_fields"  # expose every Bluetooth protocol field as a sensor
 DEFAULT_PRICE = 0.0
 # Mango Power E: 3.5 kWh LFP (51.2 V nominal, ~67 Ah). Add expansion batteries in the options.
 DEFAULT_CAPACITY_WH = 3500
 
 # Energy integration: ignore gaps longer than this (e.g. HA restart / cloud outage)
 MAX_INTEGRATION_GAP_S = 300
+
+# Bluetooth (local) - optional, per Mango Power E unit. The unit pushes realtime data about
+# every ~15-18 s over BLE, so there is no faster poll to configure.
+BLE_MODE_AUTO = "auto"
+BLE_MODE_OFF = "off"
+BLE_OPTION_PREFIX = "ble_"          # options key: ble_<serial> -> auto / off / scanner source
+BLE_POLL_INTERVAL = 15              # s between keepalive requests (the unit sets the real pace)
+BLE_STALE_AFTER = 45                # s after which Bluetooth values fall back to the cloud
+CLOUD_STALE_AFTER = 300             # s: cloud keeps serving the last values when a unit is off;
+                                    # treat live values as stale if the unit hasn't reported for this long
+CLOUD_LIVE_KEYS = ("soc", "pvPower", "gridPower", "gridImportPower", "gridExportPower",
+                   "loadPower", "loadDcPower", "batteryPower", "inverterTemp")
+
+# Values available from both sources: key -> Bluetooth decoder key (Bluetooth wins when fresh)
+BLE_OVERLAY = {
+    "soc": "socUser",
+    "pvPower": "pvPower",
+    "loadPower": "loadPower",
+    "loadDcPower": "dcPower",
+}
